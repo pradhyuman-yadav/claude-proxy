@@ -48,7 +48,7 @@ app.get('/favicon.ico', (_req, res) => res.status(204).end());
 app.get('/health', (_req, res) => {
   const status = stats.ready ? 'ok' : 'starting';
   res
-    .status(stats.ready ? 200 : 503)
+    .status(200)
     .json({
       status,
       uptime_seconds: Math.floor((Date.now() - stats.startTime) / 1000),

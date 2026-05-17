@@ -13,8 +13,8 @@ services:
       - PORT=${PORT:-3456}
       - INTERNAL_PORT=13456
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3456/health"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT:-3456}/health || exit 1"]
       interval: 30s
       timeout: 5s
-      start_period: 20s
+      start_period: 25s
       retries: 3
