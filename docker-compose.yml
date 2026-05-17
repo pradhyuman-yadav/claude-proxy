@@ -1,0 +1,20 @@
+services:
+  claude-proxy:
+    build: .
+    image: claude-proxy:local
+    container_name: claude-proxy
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-3456}:${PORT:-3456}"
+    environment:
+      # Required: OAuth token from ~/.claude/credentials.json (or Windows equivalent)
+      # Run `claude auth login` first, then extract the token.
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:?Set CLAUDE_CODE_OAUTH_TOKEN in .env}
+      - PORT=${PORT:-3456}
+      - INTERNAL_PORT=13456
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3456/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

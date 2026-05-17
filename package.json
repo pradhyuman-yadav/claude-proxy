@@ -1,0 +1,17 @@
+{
+  "name": "claude-proxy",
+  "version": "1.0.0",
+  "description": "Standalone Claude Max/Pro subscription API proxy with health dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "http-proxy-middleware": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
