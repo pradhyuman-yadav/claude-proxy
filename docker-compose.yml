@@ -1,7 +1,6 @@
 services:
   claude-proxy:
-    build: .
-    image: claude-proxy:local
+    image: ghcr.io/pradhyuman-yadav/claude-proxy:main
     container_name: claude-proxy
     restart: unless-stopped
     ports:
