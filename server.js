@@ -16,9 +16,9 @@ const stats = {
 };
 
 // ── Spawn the underlying claude-max-api proxy on an internal port ────────────
-const proxyProc = spawn('claude-max-api', [String(INTERNAL_PORT)], {
+const proxyProc = spawn('claude-max-api', [], {
   stdio: ['ignore', 'inherit', 'inherit'],
-  env: process.env,
+  env: { ...process.env, PORT: String(INTERNAL_PORT) },
 });
 
 proxyProc.on('spawn', () => {
