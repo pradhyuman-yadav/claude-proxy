@@ -234,10 +234,11 @@ app.get('/', (_req, res) => {
 });
 
 // ── Proxy all other requests to the internal claude-max-api ───────────────────
-// Intercept /v1/chat/completions to normalize the model name before forwarding.
+// Intercept /v1/chat/completions to normalize model name and fix response.
 app.use('/v1/chat/completions', express.json(), (req, _res, next) => {
   if (req.body && req.body.model) {
-    req.body.model = normalizeModel(req.body.model);
+    req._requestedModel = normalizeModel(req.body.model); // store for response fixup
+    req.body.model = req._requestedModel;
     const raw = JSON.stringify(req.body);
     req.headers['content-length'] = Buffer.byteLength(raw);
     req.rawBody = raw;
@@ -245,16 +246,57 @@ app.use('/v1/chat/completions', express.json(), (req, _res, next) => {
   next();
 });
 
+const { Transform } = require('stream');
+
 const proxyMiddleware = createProxyMiddleware({
   target: `http://127.0.0.1:${INTERNAL_PORT}`,
   changeOrigin: false,
   ws: true,
+  selfHandleResponse: true,
   on: {
     proxyReq: (proxyReq, req) => {
       stats.requests++;
       if (req.rawBody) {
         proxyReq.write(req.rawBody);
         proxyReq.end();
+      }
+    },
+    proxyRes: (proxyRes, req, res) => {
+      // Copy status + headers
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+
+      const model = req._requestedModel;
+      const isCompletion = req.path && req.path.includes('/v1/chat/completions');
+
+      // Only rewrite model field on completions responses
+      if (!model || !isCompletion) {
+        proxyRes.pipe(res);
+        return;
+      }
+
+      const contentType = proxyRes.headers['content-type'] || '';
+
+      if (contentType.includes('text/event-stream')) {
+        // Streaming SSE — replace model field in each chunk
+        const fixer = new Transform({
+          transform(chunk, _enc, cb) {
+            cb(null, chunk.toString().replace(/"model"\s*:\s*"[^"]*"/g, `"model":"${model}"`));
+          },
+        });
+        proxyRes.pipe(fixer).pipe(res);
+      } else {
+        // Non-streaming — buffer, parse, fix, send
+        const chunks = [];
+        proxyRes.on('data', c => chunks.push(c));
+        proxyRes.on('end', () => {
+          try {
+            const json = JSON.parse(Buffer.concat(chunks).toString());
+            json.model = model;
+            res.end(JSON.stringify(json));
+          } catch {
+            res.end(Buffer.concat(chunks));
+          }
+        });
       }
     },
     error: (_err, _req, res) => {
