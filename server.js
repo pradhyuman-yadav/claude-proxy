@@ -361,19 +361,22 @@ const proxyMiddleware = createProxyMiddleware({
       }
     },
     proxyRes: (proxyRes, req, res) => {
-      // Copy status + headers
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
-
       const model = req._requestedModel;
       const isCompletion = req.path && req.path.includes('/v1/chat/completions');
 
-      // Only rewrite model field on completions responses
       if (!model || !isCompletion) {
+        // Pass through unchanged
+        res.writeHead(proxyRes.statusCode, proxyRes.headers);
         proxyRes.pipe(res);
         return;
       }
 
       const contentType = proxyRes.headers['content-type'] || '';
+
+      // Strip content-length — body size changes when we rewrite the model field
+      const headers = { ...proxyRes.headers };
+      delete headers['content-length'];
+      res.writeHead(proxyRes.statusCode, headers);
 
       if (contentType.includes('text/event-stream')) {
         // Streaming SSE — replace model field in each chunk
