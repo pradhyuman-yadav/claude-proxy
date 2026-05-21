@@ -87,6 +87,19 @@ proxyProc.on('exit', (code, signal) => {
 // ── Express app ───────────────────────────────────────────────────────────────
 const app = express();
 
+// ── Auth middleware ───────────────────────────────────────────────────────────
+// Set API_KEY env var to enable. Protects /v1/* and the dashboard.
+// /health is always open (needed for Docker HEALTHCHECK).
+const API_KEY = process.env.API_KEY || '';
+
+function requireAuth(req, res, next) {
+  if (!API_KEY) return next(); // no key set → open access
+  const auth = req.headers['authorization'] || '';
+  const key = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+  if (key === API_KEY) return next();
+  res.status(401).json({ error: 'unauthorized', message: 'Invalid or missing API key.' });
+}
+
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
 // JSON health endpoint — used by Docker HEALTHCHECK and monitoring tools
@@ -105,7 +118,7 @@ app.get('/health', (_req, res) => {
 });
 
 // HTML status dashboard
-app.get('/', (req, res) => {
+app.get('/', requireAuth, (req, res) => {
   const sec = Math.floor((Date.now() - stats.startTime) / 1000);
   const uptime = `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m ${sec % 60}s`;
   const online = stats.ready;
@@ -333,6 +346,9 @@ Body (JSON):
 });
 
 // ── Proxy all other requests to the internal claude-max-api ───────────────────
+// Auth on all /v1/* routes
+app.use('/v1', requireAuth);
+
 // Intercept /v1/chat/completions to normalize model name and fix response.
 app.use('/v1/chat/completions', express.json(), (req, _res, next) => {
   if (req.body && req.body.model) {
