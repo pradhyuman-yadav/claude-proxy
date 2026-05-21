@@ -5,6 +5,17 @@ const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const { spawn } = require('child_process');
 
+// Normalize any Claude model name variant to what claude-max-api-proxy accepts.
+// e.g. "claude-sonnet-4-6", "claude-sonnet-4.6", "sonnet-4-6" → "claude-sonnet-4"
+function normalizeModel(name = '') {
+  if (!name) return name;
+  const s = name.toLowerCase();
+  if (s.includes('opus'))   return 'claude-opus-4';
+  if (s.includes('sonnet')) return 'claude-sonnet-4';
+  if (s.includes('haiku'))  return 'claude-haiku-4';
+  return name; // unknown — pass through unchanged
+}
+
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
 const INTERNAL_PORT = parseInt(process.env.INTERNAL_PORT ?? '13456', 10);
 
@@ -189,12 +200,29 @@ app.get('/', (_req, res) => {
 });
 
 // ── Proxy all other requests to the internal claude-max-api ───────────────────
+// Intercept /v1/chat/completions to normalize the model name before forwarding.
+app.use('/v1/chat/completions', express.json(), (req, _res, next) => {
+  if (req.body && req.body.model) {
+    req.body.model = normalizeModel(req.body.model);
+    const raw = JSON.stringify(req.body);
+    req.headers['content-length'] = Buffer.byteLength(raw);
+    req.rawBody = raw;
+  }
+  next();
+});
+
 const proxyMiddleware = createProxyMiddleware({
   target: `http://127.0.0.1:${INTERNAL_PORT}`,
   changeOrigin: false,
   ws: true,
   on: {
-    proxyReq: () => { stats.requests++; },
+    proxyReq: (proxyReq, req) => {
+      stats.requests++;
+      if (req.rawBody) {
+        proxyReq.write(req.rawBody);
+        proxyReq.end();
+      }
+    },
     error: (_err, _req, res) => {
       stats.errors++;
       if (res && !res.headersSent) {
