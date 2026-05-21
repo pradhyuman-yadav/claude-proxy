@@ -96,8 +96,12 @@ function requireAuth(req, res, next) {
   if (!API_KEY) return next(); // no key set → open access
   const auth = req.headers['authorization'] || '';
   const key = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
-  if (key === API_KEY) return next();
-  res.status(401).json({ error: 'unauthorized', message: 'Invalid or missing API key.' });
+  if (key !== API_KEY) {
+    return res.status(401).json({ error: 'unauthorized', message: 'Invalid or missing API key.' });
+  }
+  // Strip our key before forwarding — claude-max-api uses its own token
+  delete req.headers['authorization'];
+  next();
 }
 
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
