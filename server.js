@@ -5,18 +5,48 @@ const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const { spawn } = require('child_process');
 
-// Normalize model name to what claude-max-api-proxy accepts.
-// Strips minor version suffix so any future model works automatically:
-//   claude-sonnet-4-6  → claude-sonnet-4
-//   claude-opus-4-7    → claude-opus-4
-//   claude-nova-5-2    → claude-nova-5   (hypothetical future model)
-//   claude-sonnet-4    → claude-sonnet-4 (already normalized, unchanged)
+// ── Dynamic model registry ────────────────────────────────────────────────────
+// Built at startup by querying /v1/models from the internal proxy.
+// Maps family aliases → latest canonical model id reported by claude-max-api.
+//   "sonnet"            → "claude-sonnet-4"
+//   "claude-sonnet"     → "claude-sonnet-4"
+//   "claude-sonnet-4-6" → "claude-sonnet-4"  (strip minor, then alias lookup)
+// When a new model family is added upstream, it appears here automatically.
+
+let modelRegistry = {}; // populated after internal proxy starts
+
+async function buildModelRegistry() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${INTERNAL_PORT}/v1/models`);
+    const { data = [] } = await res.json();
+    const registry = {};
+    for (const { id } of data) {
+      // id e.g. "claude-sonnet-4"
+      // Extract family = "sonnet", major = "4"
+      const m = id.match(/^claude-([a-z]+)-(\d+)$/i);
+      if (!m) continue;
+      const [, family, major] = m;
+      // Alias: "sonnet" → id, "claude-sonnet" → id, "claude-sonnet-4" → id
+      registry[family]                    = id;
+      registry[`claude-${family}`]        = id;
+      registry[`claude-${family}-${major}`] = id;
+    }
+    modelRegistry = registry;
+    console.log('[claude-proxy] Model registry built:', JSON.stringify(registry));
+  } catch (err) {
+    console.warn('[claude-proxy] Could not build model registry:', err.message);
+  }
+}
+
 function normalizeModel(name = '') {
   if (!name) return name;
-  // Handle dot notation: claude-sonnet-4.6 → claude-sonnet-4
-  const dotFixed = name.replace(/^(claude-[a-z]+-\d+)\.\d+$/i, '$1');
-  // Strip trailing -N minor version: claude-sonnet-4-6 → claude-sonnet-4
-  return dotFixed.replace(/^(claude-[a-z]+-\d+)-\d+$/i, '$1');
+  // 1. Strip dot notation:  claude-sonnet-4.6 → claude-sonnet-4
+  // 2. Strip minor version: claude-sonnet-4-6 → claude-sonnet-4
+  const base = name
+    .replace(/^(claude-[a-z]+-\d+)\.\d+$/i, '$1')
+    .replace(/^(claude-[a-z]+-\d+)-\d+$/i, '$1');
+  // 3. Lookup in registry (covers shorthand like "sonnet", "claude-sonnet")
+  return modelRegistry[base.toLowerCase()] ?? modelRegistry[name.toLowerCase()] ?? base;
 }
 
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
@@ -37,7 +67,8 @@ const proxyProc = spawn('claude-max-api', [String(INTERNAL_PORT)], {
 
 proxyProc.on('spawn', () => {
   // Give it a few seconds to bind and authenticate
-  setTimeout(() => {
+  setTimeout(async () => {
+    await buildModelRegistry();
     stats.ready = true;
     console.log(`[claude-proxy] Internal proxy ready on :${INTERNAL_PORT}`);
   }, 5000);
