@@ -121,8 +121,8 @@ app.get('/health', (_req, res) => {
     });
 });
 
-// HTML status dashboard
-app.get('/', requireAuth, (req, res) => {
+// HTML status dashboard — public (no auth needed, it's just a status page)
+app.get('/', (req, res) => {
   const sec = Math.floor((Date.now() - stats.startTime) / 1000);
   const uptime = `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m ${sec % 60}s`;
   const online = stats.ready;
