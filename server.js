@@ -291,6 +291,33 @@ app.get('/', (req, res) => {
     </table>
   </div>
 
+  <!-- Supported params -->
+  <div class="card">
+    <div class="section-title">Supported Parameters</div>
+    <div style="font-size:12px;color:#71717a;margin-bottom:14px">
+      This proxy runs on <strong style="color:#a1a1aa">Claude Code CLI</strong>, not the direct Anthropic API.
+      Unsupported params are silently stripped before forwarding.
+    </div>
+    <table>
+      <thead><tr><th>Parameter</th><th>Support</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>model</code></td><td><span style="color:#4ade80">✓ yes</span></td><td>Auto-normalized to canonical ID</td></tr>
+        <tr><td><code>messages</code></td><td><span style="color:#4ade80">✓ yes</span></td><td>system / user / assistant roles</td></tr>
+        <tr><td><code>max_tokens</code></td><td><span style="color:#4ade80">✓ yes</span></td><td></td></tr>
+        <tr><td><code>temperature</code></td><td><span style="color:#4ade80">✓ yes</span></td><td>0 – 1</td></tr>
+        <tr><td><code>stream</code></td><td><span style="color:#4ade80">✓ yes</span></td><td>SSE streaming supported</td></tr>
+        <tr><td><code>stop</code></td><td><span style="color:#4ade80">✓ yes</span></td><td>Stop sequences</td></tr>
+        <tr><td><code>tools</code> / <code>tool_choice</code></td><td><span style="color:#f87171">✗ no</span></td><td>Function calling not supported</td></tr>
+        <tr><td><code>top_p</code> / <code>top_k</code></td><td><span style="color:#f87171">✗ no</span></td><td>Stripped before forwarding</td></tr>
+        <tr><td><code>n</code></td><td><span style="color:#f87171">✗ no</span></td><td>Only 1 completion per request</td></tr>
+        <tr><td><code>presence_penalty</code> / <code>frequency_penalty</code></td><td><span style="color:#f87171">✗ no</span></td><td>Stripped</td></tr>
+        <tr><td><code>logprobs</code> / <code>logit_bias</code></td><td><span style="color:#f87171">✗ no</span></td><td>Stripped</td></tr>
+        <tr><td><code>response_format</code></td><td><span style="color:#f87171">✗ no</span></td><td>Use prompt instructions instead</td></tr>
+        <tr><td>Vision / image inputs</td><td><span style="color:#f87171">✗ no</span></td><td>Text only</td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <!-- Usage -->
   <div class="card">
     <div class="section-title">How to Use</div>
@@ -353,12 +380,26 @@ Body (JSON):
 // Auth on all /v1/* routes
 app.use('/v1', requireAuth);
 
-// Intercept /v1/chat/completions to normalize model name and fix response.
+// Parameters claude-max-api-proxy actually supports.
+// Everything else is silently stripped to avoid errors.
+const SUPPORTED_PARAMS = new Set([
+  'model', 'messages', 'max_tokens', 'temperature', 'stream', 'stop',
+]);
+
+// Intercept /v1/chat/completions — normalize model + strip unsupported params.
 app.use('/v1/chat/completions', express.json(), (req, _res, next) => {
-  if (req.body && req.body.model) {
-    req._requestedModel = normalizeModel(req.body.model); // store for response fixup
-    req.body.model = req._requestedModel;
-    const raw = JSON.stringify(req.body);
+  if (req.body && typeof req.body === 'object') {
+    // Strip unsupported params
+    const stripped = {};
+    for (const key of SUPPORTED_PARAMS) {
+      if (req.body[key] !== undefined) stripped[key] = req.body[key];
+    }
+    // Normalize model name
+    if (stripped.model) {
+      req._requestedModel = normalizeModel(stripped.model);
+      stripped.model = req._requestedModel;
+    }
+    const raw = JSON.stringify(stripped);
     req.headers['content-length'] = Buffer.byteLength(raw);
     req.rawBody = raw;
   }
