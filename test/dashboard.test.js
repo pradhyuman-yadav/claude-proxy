@@ -16,6 +16,7 @@ function render(overrides = {}) {
     modelRegistry: REGISTRY,
     port: 3456,
     hasToken: true,
+    authRequired: false,
     baseUrl: 'http://example.com',
     ...overrides,
   });
@@ -54,4 +55,21 @@ test('renderDashboard reflects starting / no-token state', () => {
 test('renderDashboard leaves n8n {{ $json.text }} untouched', () => {
   const html = render();
   assert.match(html, /\{\{ \$json\.text \}\}/);
+});
+
+test('open access: examples use "any" and show open badge', () => {
+  const html = render({ authRequired: false });
+  assert.match(html, /Bearer any/);
+  assert.match(html, /api_key="any"/);
+  assert.match(html, /Open access/);
+  assert.doesNotMatch(html, /YOUR_API_KEY/);
+});
+
+test('API_KEY set: examples require the key and show locked badge', () => {
+  const html = render({ authRequired: true });
+  assert.match(html, /Bearer YOUR_API_KEY/);
+  assert.match(html, /api_key="YOUR_API_KEY"/);
+  assert.match(html, /API key required/);
+  assert.match(html, /Required —/);        // the api_key note
+  assert.doesNotMatch(html, /Bearer any/);
 });

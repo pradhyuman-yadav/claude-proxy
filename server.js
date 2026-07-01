@@ -138,7 +138,8 @@ app.get('/health', (_req, res) => {
       uptime_seconds: Math.floor((Date.now() - stats.startTime) / 1000),
       requests: stats.requests,
       errors: stats.errors,
-      auth_configured: !!process.env.CLAUDE_CODE_OAUTH_TOKEN,
+      auth_configured: !!process.env.CLAUDE_CODE_OAUTH_TOKEN, // upstream OAuth token present
+      api_key_required: !!API_KEY,                            // clients must send Bearer API_KEY
       registry_ready: stats.registryReady,
       models: Object.keys(modelRegistry).length,
       port: PORT,
@@ -153,6 +154,7 @@ app.get('/', (req, res) => {
     modelRegistry,
     port: PORT,
     hasToken: !!process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    authRequired: !!API_KEY,
     baseUrl: `${req.protocol}://${req.get('host')}`,
   }));
 });
