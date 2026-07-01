@@ -4,11 +4,12 @@
   "description": "Standalone Claude Max/Pro subscription API proxy with health dashboard",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "http-proxy-middleware": "^3.0.3"
+    "express": "^4.21.2",
+    "http-proxy-middleware": "^3.0.7"
   },
   "engines": {
     "node": ">=20"
