@@ -85,10 +85,25 @@ services:
 
 | Variable | Default | Description |
 |---|---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | — | **Required.** OAuth token for Claude Code CLI |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | **Required.** OAuth token for Claude Code CLI. The container refuses to start without it. |
+| `API_KEY` | — | Optional. Set to protect `/v1/*` with `Authorization: Bearer <key>`. Empty = open access. Generate: `openssl rand -hex 32`. |
 | `HOST_PORT` | `3456` | Port exposed on the host (docker-compose only) |
 | `PORT` | `3456` | Port the container listens on |
 | `INTERNAL_PORT` | `13456` | Internal port for the raw proxy (do not expose) |
+
+## Architecture
+
+```
+client ──▶ :3456 Express wrapper ──▶ :13456 claude-max-api ──▶ Claude (subscription)
+             │  routes /, /health
+             │  auth (API_KEY) on /v1/*
+             │  strips unsupported params
+             │  normalizes model aliases
+             └▶ rewrites "model" in the response (SSE + JSON)
+```
+
+The internal `claude-max-api` process is spawned as a child on `INTERNAL_PORT`
+and is never exposed. Only the Express wrapper faces the network.
 
 ---
 
@@ -126,8 +141,31 @@ curl http://localhost:3456/health
   "requests": 7,
   "errors": 0,
   "auth_configured": true,
+  "registry_ready": true,
+  "models": 9,
   "port": 3456
 }
 ```
 
-Returns `200 ok` when ready, `503 starting` during startup.
+Returns `200 ok` once the internal proxy is up, `503 starting` during startup.
+`registry_ready` is `true` only after `/v1/models` has been read successfully —
+if it stays `false`, model aliases (e.g. `sonnet`) will not resolve.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Container exits immediately with `CLAUDE_CODE_OAUTH_TOKEN is not set` | Token env var missing | Set `CLAUDE_CODE_OAUTH_TOKEN` in `.env` / stack |
+| `/health` stuck at `503 starting` | Internal proxy not binding — bad/expired token or slow start | Check logs; re-run `claude auth login` and refresh the token |
+| `registry_ready: false` but status `ok` | `/v1/models` returned nothing; aliases won't resolve | Check logs for registry retries; use full model ids meanwhile |
+| Completions return `401` | `API_KEY` set but client sent wrong/no bearer token | Send `Authorization: Bearer <API_KEY>` |
+| `502 proxy_unavailable` | Upstream error or still starting | Retry; inspect container logs |
+
+## Development
+
+```bash
+npm install
+npm test        # runs the node:test suite in test/
+```
