@@ -109,14 +109,25 @@ and is never exposed. Only the Express wrapper faces the network.
 
 ## Using the proxy
 
-Point any OpenAI-compatible client at `http://<host>:3456`:
+Point any OpenAI-compatible client at `http://<host>:3456`.
+
+**Auth depends on whether you set `API_KEY`:**
+
+| `API_KEY` env | What clients send as `api_key` |
+|---|---|
+| **not set** (open access) | any value — it is ignored |
+| **set** (recommended) | that exact key — sent as `Authorization: Bearer <API_KEY>`, else `401` |
+
+The client `api_key` is **only** the proxy's `API_KEY` gate. Your Claude
+subscription is authenticated separately via `CLAUDE_CODE_OAUTH_TOKEN` on the
+server — clients never see it.
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:3456/v1",
-    api_key="not-needed",  # auth handled by the proxy
+    api_key="YOUR_API_KEY",  # the value of API_KEY; use any string if API_KEY is unset
 )
 
 response = client.chat.completions.create(
@@ -141,6 +152,7 @@ curl http://localhost:3456/health
   "requests": 7,
   "errors": 0,
   "auth_configured": true,
+  "api_key_required": true,
   "registry_ready": true,
   "models": 9,
   "port": 3456
