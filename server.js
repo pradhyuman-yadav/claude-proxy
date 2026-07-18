@@ -9,7 +9,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const { spawn, execFile } = require('child_process');
 const { buildRegistry, normalizeModel: resolveModel, stripParams, openaiError } = require('./lib/model');
 const { SUPPORTED_PARAMS } = require('./lib/capabilities');
-const { GEMINI_BASE, isGeminiModel, mergedModels } = require('./lib/gemini');
+const { GEMINI_BASE, isGeminiModel, mergedModels, resolveGeminiMode, filterGeminiModels } = require('./lib/gemini');
 const { renderDashboard } = require('./lib/dashboard');
 
 // ── Dynamic model registry ────────────────────────────────────────────────────
@@ -24,27 +24,39 @@ let modelRegistry = {};   // populated after internal proxy starts
 let claudeModelData = []; // raw /v1/models data from claude-max-api
 let geminiModelData = []; // raw model list from Google's OpenAI endpoint
 
-// ── Gemini backend (optional) ────────────────────────────────────────────────
-// Enabled by setting GEMINI_API_KEY. Requests for gemini-* models are routed
-// to Google's official OpenAI-compatible endpoint; everything else goes to
-// the Claude path. Selection is purely by model name — exactly how generic
-// OpenAI connectors already choose a model.
+// ── Gemini backend (optional, two modes) ─────────────────────────────────────
+// GEMINI_BACKEND=api → Google's official OpenAI endpoint (GEMINI_API_KEY).
+// GEMINI_BACKEND=cli → CLIProxyAPI child wrapping an Antigravity OAuth login.
+// Requests for gemini-* models route there; everything else → Claude path.
+// Selection is purely by model name — how OpenAI connectors already choose.
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_ENABLED = !!GEMINI_API_KEY;
+const GEMINI_MODE = resolveGeminiMode(process.env);
+const GEMINI_INTERNAL_PORT = 13457; // must match gemini-config.yaml
+const GEMINI_ENABLED = GEMINI_MODE !== 'off';
+
+// Where gemini-* requests go, per mode.
+const geminiTarget = GEMINI_MODE === 'cli'
+  ? `http://127.0.0.1:${GEMINI_INTERNAL_PORT}/v1`
+  : GEMINI_BASE;
+// Auth header only for the official API; the CLI child is loopback + keyless.
+const geminiHeaders = GEMINI_MODE === 'api'
+  ? { authorization: `Bearer ${GEMINI_API_KEY}` }
+  : {};
 
 async function refreshGeminiModels() {
   if (!GEMINI_ENABLED) return;
   try {
-    const res = await fetch(`${GEMINI_BASE}/models`, {
-      headers: { authorization: `Bearer ${GEMINI_API_KEY}` },
+    const res = await fetch(`${geminiTarget}/models`, {
+      headers: geminiHeaders,
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { data = [] } = await res.json();
-    if (data.length && data.length !== geminiModelData.length) {
-      console.log(`[claude-proxy] Gemini models refreshed: ${data.length} available`);
+    const filtered = GEMINI_MODE === 'cli' ? filterGeminiModels(data) : data;
+    if (filtered.length && filtered.length !== geminiModelData.length) {
+      console.log(`[claude-proxy] Gemini models refreshed: ${filtered.length} available`);
     }
-    geminiModelData = data;
+    geminiModelData = filtered;
   } catch (err) {
     console.warn('[claude-proxy] Could not fetch Gemini models:', err.message);
   }
@@ -172,11 +184,30 @@ function startRegistryRefresh() {
   }, REGISTRY_REFRESH_MS).unref();
 }
 
+// ── CLIProxyAPI child (GEMINI_BACKEND=cli) ───────────────────────────────────
+// Wraps an Antigravity OAuth login; log in via the /terminal console.
+// Non-fatal if the binary is missing or it dies — Claude keeps working.
+let geminiProc = null;
+if (GEMINI_MODE === 'cli') {
+  geminiProc = spawn('cli-proxy-api', ['--config', path.join(__dirname, 'gemini-config.yaml')], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  geminiProc.on('error', (err) => {
+    console.warn('[claude-proxy] cli-proxy-api not available, Gemini CLI mode disabled:', err.message);
+    geminiProc = null;
+  });
+  geminiProc.on('exit', (code, signal) => {
+    console.warn(`[claude-proxy] cli-proxy-api exited (code=${code} signal=${signal})`);
+    geminiProc = null;
+  });
+}
+
 // Gemini polling is independent of the Claude child — works even in setup mode.
 if (GEMINI_ENABLED) {
-  refreshGeminiModels();
+  // In cli mode give the child a moment to bind before the first poll.
+  setTimeout(refreshGeminiModels, GEMINI_MODE === 'cli' ? PROXY_STARTUP_DELAY_MS : 0);
   setInterval(refreshGeminiModels, REGISTRY_REFRESH_MS).unref();
-  console.log('[claude-proxy] Gemini backend enabled (official OpenAI-compatible API)');
+  console.log(`[claude-proxy] Gemini backend enabled (mode: ${GEMINI_MODE})`);
 }
 
 // ── Web terminal (ttyd) for interactive Claude login ─────────────────────────
@@ -297,6 +328,7 @@ app.get('/health', (_req, res) => {
       registry_ready: stats.registryReady,
       models: Object.keys(modelRegistry).length,
       gemini_enabled: GEMINI_ENABLED,
+      gemini_mode: GEMINI_MODE,
       gemini_models: geminiModelData.length,
       port: PORT,
     });
@@ -338,6 +370,7 @@ app.get('/', (req, res) => {
     cliVersion,
     setupMode: SETUP_MODE,
     geminiEnabled: GEMINI_ENABLED,
+    geminiMode: GEMINI_MODE,
     geminiModels: geminiModelData,
   }));
 });
@@ -361,12 +394,9 @@ const { Readable } = require('stream');
 async function handleGemini(req, res) {
   stats.requests++;
   try {
-    const upstream = await fetch(`${GEMINI_BASE}/chat/completions`, {
+    const upstream = await fetch(`${geminiTarget}/chat/completions`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${GEMINI_API_KEY}`,
-      },
+      headers: { 'content-type': 'application/json', ...geminiHeaders },
       body: JSON.stringify(req.body),
       signal: AbortSignal.timeout(600000),
     });
@@ -561,6 +591,7 @@ function shutdown(sig) {
   server.close(done);
   try { if (proxyProc) proxyProc.kill('SIGTERM'); } catch { /* already gone */ }
   try { if (ttydProc) ttydProc.kill('SIGTERM'); } catch { /* already gone */ }
+  try { if (geminiProc) geminiProc.kill('SIGTERM'); } catch { /* already gone */ }
   setTimeout(() => process.exit(0), 10000).unref();
 }
 ['SIGTERM', 'SIGINT'].forEach(sig => process.on(sig, () => shutdown(sig)));

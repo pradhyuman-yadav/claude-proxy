@@ -2,7 +2,30 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeGeminiId, isGeminiModel, mergedModels } = require('../lib/gemini');
+const { normalizeGeminiId, isGeminiModel, mergedModels, resolveGeminiMode, filterGeminiModels } = require('../lib/gemini');
+
+test('resolveGeminiMode honors explicit GEMINI_BACKEND', () => {
+  assert.equal(resolveGeminiMode({ GEMINI_BACKEND: 'api', GEMINI_API_KEY: '' }), 'api');
+  assert.equal(resolveGeminiMode({ GEMINI_BACKEND: 'cli', GEMINI_API_KEY: 'k' }), 'cli');
+  assert.equal(resolveGeminiMode({ GEMINI_BACKEND: 'OFF' }), 'off');
+});
+
+test('resolveGeminiMode defaults: api with key, cli without', () => {
+  assert.equal(resolveGeminiMode({ GEMINI_API_KEY: 'k' }), 'api');
+  assert.equal(resolveGeminiMode({}), 'cli');
+  assert.equal(resolveGeminiMode({ GEMINI_BACKEND: 'bogus' }), 'cli');
+});
+
+test('filterGeminiModels keeps only the gemini family', () => {
+  const out = filterGeminiModels([
+    { id: 'gemini-3.1-pro' },
+    { id: 'models/gemini-3.5-flash' },
+    { id: 'claude-sonnet-4' },
+    { id: 'gpt-5.5' },
+    {},
+  ]);
+  assert.deepEqual(out.map(m => m.id), ['gemini-3.1-pro', 'models/gemini-3.5-flash']);
+});
 
 test('isGeminiModel routes gemini names to the Gemini backend', () => {
   assert.equal(isGeminiModel('gemini-2.5-pro'), true);

@@ -1,34 +1,51 @@
 #!/bin/sh
-# Interactive Claude authentication console, served via ttyd at /terminal.
-# Tries the known login entrypoints across Claude Code CLI versions, then
-# drops to a shell for manual steps (claude doctor, inspecting ~/.claude).
+# Interactive authentication console, served via ttyd at /terminal.
+# Lets the user log in either backend from the browser; credentials land in
+# volume-persisted dirs (~/.claude, ~/.cli-proxy-api).
 set +e
 
-echo "==============================================="
-echo "  claude-proxy - authentication console"
-echo "==============================================="
-echo ""
-echo "Starting interactive Claude login..."
-echo "(follow the URL it prints, then paste the code)"
-echo ""
+while true; do
+  echo ""
+  echo "==============================================="
+  echo "  claude-proxy - authentication console"
+  echo "==============================================="
+  echo ""
+  echo "  1) Log in Claude   (Claude Code CLI OAuth)"
+  echo "  2) Log in Gemini   (Antigravity OAuth via CLIProxyAPI)"
+  echo "  3) Shell           (claude doctor, inspect creds, ...)"
+  echo "  4) Exit"
+  echo ""
+  printf "Select [1-4]: "
+  read -r choice
 
-if claude auth login 2>/dev/null; then
-  :
-elif claude login 2>/dev/null; then
-  :
-else
-  echo "Interactive login command not found; trying setup-token..."
-  claude setup-token
-fi
-
-echo ""
-echo "-----------------------------------------------"
-echo "If login succeeded, credentials are stored in"
-echo "~/.claude (persisted via the Docker volume)."
-echo ""
-echo "Now restart the proxy to pick them up:"
-echo "  - click 'Restart proxy' on the dashboard, or"
-echo "  - run: docker restart claude-proxy"
-echo "-----------------------------------------------"
-echo "Dropping to a shell (claude doctor is available)."
-exec sh
+  case "$choice" in
+    1)
+      echo ""
+      echo "Starting Claude login (follow the URL, paste the code)..."
+      if claude auth login 2>/dev/null; then :
+      elif claude login 2>/dev/null; then :
+      else
+        echo "Interactive login command not found; trying setup-token..."
+        claude setup-token
+      fi
+      echo ""
+      echo "Done. Click 'restart proxy' on the dashboard to apply."
+      ;;
+    2)
+      echo ""
+      echo "Starting Antigravity OAuth login (follow the URL, paste the code)..."
+      cli-proxy-api --config /app/gemini-config.yaml --antigravity-login --no-browser
+      echo ""
+      echo "Done. Click 'restart proxy' on the dashboard to apply."
+      ;;
+    3)
+      exec sh
+      ;;
+    4)
+      exit 0
+      ;;
+    *)
+      echo "Invalid choice."
+      ;;
+  esac
+done

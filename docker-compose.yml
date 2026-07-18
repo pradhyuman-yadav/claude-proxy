@@ -10,14 +10,18 @@ services:
       # Option B: leave empty and log in from the browser at /terminal instead —
       #           credentials persist in the claude-data volume below.
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
-      # Optional: enables gemini-* models via Google's official OpenAI endpoint
+      # Gemini backend: "cli" (Antigravity OAuth via CLIProxyAPI — log in at
+      # /terminal), "api" (official endpoint, needs GEMINI_API_KEY), or "off".
+      # Default: api if GEMINI_API_KEY set, else cli.
+      - GEMINI_BACKEND=${GEMINI_BACKEND:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - API_KEY=${API_KEY:-}
       - PORT=${PORT:-3456}
       - INTERNAL_PORT=13456
     volumes:
-      # Persists Claude credentials across container restarts/redeploys
+      # Persist credentials across container restarts/redeploys
       - claude-data:/home/node/.claude
+      - gemini-data:/home/node/.cli-proxy-api
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT:-3456}/health || exit 1"]
       interval: 30s
@@ -27,3 +31,4 @@ services:
 
 volumes:
   claude-data:
+  gemini-data:
