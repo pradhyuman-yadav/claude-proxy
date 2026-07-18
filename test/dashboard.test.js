@@ -52,6 +52,22 @@ test('renderDashboard reflects starting / absent-token state', () => {
   assert.match(html, /ABSENT/);
 });
 
+test('gemini models render with backend column when provided', () => {
+  const html = render({
+    geminiEnabled: true,
+    geminiModels: [{ id: 'models/gemini-2.5-pro' }, { id: 'gemini-2.5-flash' }],
+  });
+  assert.match(html, /<code>gemini-2\.5-pro<\/code>/);
+  assert.match(html, /<td>gemini<\/td>/);
+  assert.match(html, /ENABLED/);
+});
+
+test('gemini disabled shows DISABLED and no gemini rows', () => {
+  const html = render({ geminiEnabled: false, geminiModels: [] });
+  assert.match(html, /DISABLED/);
+  assert.doesNotMatch(html, /<td>gemini<\/td>/);
+});
+
 test('renderDashboard renders param rows from capabilities', () => {
   const html = render();
   assert.match(html, /<code>max_tokens<\/code>/);

@@ -87,6 +87,7 @@ services:
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth token for Claude Code CLI. Optional if you log in via `/terminal` instead (see below). With neither, the proxy starts in **setup mode**. |
 | `API_KEY` | — | Optional. Set to protect `/v1/*` with `Authorization: Bearer <key>`. Empty = open access. Generate: `openssl rand -hex 32`. |
+| `GEMINI_API_KEY` | — | Optional. Enables `gemini-*` models via [Google's official OpenAI-compatible endpoint](https://ai.google.dev/gemini-api/docs/openai). Get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free tier available). |
 | `HOST_PORT` | `3456` | Port exposed on the host (docker-compose only) |
 | `PORT` | `3456` | Port the container listens on |
 | `INTERNAL_PORT` | `13456` | Internal port for the raw proxy (do not expose) |
@@ -167,6 +168,26 @@ LibreChat, LangChain, …) works with just two fields — no custom connector:
 |---|---|
 | Base URL | `http://<host>:3456/v1` |
 | API key | your `API_KEY` (any string if unset) |
+
+### Gemini backend (model-name routing)
+
+With `GEMINI_API_KEY` set, the same base URL also serves **Gemini** models.
+Selection is by model name — exactly how OpenAI-compatible tools already
+pick a model:
+
+- `gemini-2.5-pro`, `gemini-2.5-flash`, … → Google's **official**
+  OpenAI-compatible endpoint (your `GEMINI_API_KEY`, injected server-side)
+- `claude-*`, `sonnet`, `opus`, … → the Claude Code CLI path
+
+`GET /v1/models` lists both families in one dropdown. Gemini requests pass
+through unmodified — `tools`, `response_format`, `top_p` etc. work there
+even though the Claude path strips them.
+
+> **Why not wrap Gemini CLI like we wrap Claude Code?** Google actively
+> suspends Google accounts that pipe Gemini CLI / Antigravity OAuth tokens
+> through third-party proxies (mass enforcement since Feb 2026, including
+> paying subscribers). The official API key endpoint is ToS-clean and has a
+> free tier — that's what this proxy uses.
 
 Compatibility provided by the proxy:
 - `GET /v1/models` for model discovery / key validation

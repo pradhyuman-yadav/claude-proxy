@@ -10,6 +10,8 @@ services:
       # Option B: leave empty and log in from the browser at /terminal instead —
       #           credentials persist in the claude-data volume below.
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # Optional: enables gemini-* models via Google's official OpenAI endpoint
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - API_KEY=${API_KEY:-}
       - PORT=${PORT:-3456}
       - INTERNAL_PORT=13456
