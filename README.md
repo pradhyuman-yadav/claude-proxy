@@ -122,6 +122,24 @@ The client `api_key` is **only** the proxy's `API_KEY` gate. Your Claude
 subscription is authenticated separately via `CLAUDE_CODE_OAUTH_TOKEN` on the
 server — clients never see it.
 
+### Generic "OpenAI Compatible" connectors
+
+Any tool with an OpenAI-compatible provider option (n8n, OpenWebUI, Flowise,
+LibreChat, LangChain, …) works with just two fields — no custom connector:
+
+| Field | Value |
+|---|---|
+| Base URL | `http://<host>:3456/v1` |
+| API key | your `API_KEY` (any string if unset) |
+
+Compatibility provided by the proxy:
+- `GET /v1/models` for model discovery / key validation
+- OpenAI error envelope (`{"error": {"message", "type", "code"}}`) on 401/502
+- `max_completion_tokens` accepted as an alias for `max_tokens`
+- `api-key` header accepted as an alternative to `Authorization: Bearer`
+- CORS + `OPTIONS` preflight for browser-based clients
+- Unsupported params stripped server-side, so strict clients don't error
+
 ```python
 from openai import OpenAI
 

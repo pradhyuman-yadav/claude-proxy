@@ -4,7 +4,7 @@ const http = require('http');
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const { spawn } = require('child_process');
-const { buildRegistry, normalizeModel: resolveModel, stripParams } = require('./lib/model');
+const { buildRegistry, normalizeModel: resolveModel, stripParams, openaiError } = require('./lib/model');
 const { renderDashboard } = require('./lib/dashboard');
 
 // ── Dynamic model registry ────────────────────────────────────────────────────
@@ -115,13 +115,34 @@ const API_KEY = process.env.API_KEY || '';
 
 function requireAuth(req, res, next) {
   if (!API_KEY) return next(); // no key set → open access
+  // Accept both OpenAI style (Authorization: Bearer <key>) and Azure/OpenAI
+  // module style (api-key: <key>) so generic connectors work unmodified.
   const auth = req.headers['authorization'] || '';
-  const key = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+  const key = bearer || req.headers['api-key'] || '';
   if (key !== API_KEY) {
-    return res.status(401).json({ error: 'unauthorized', message: 'Invalid or missing API key.' });
+    // OpenAI error shape — connectors read error.message
+    return res.status(401).json(openaiError(
+      'Incorrect API key provided. Set your key in the Authorization: Bearer header (or api-key header).',
+      'invalid_request_error',
+      'invalid_api_key',
+    ));
   }
   // Strip our key before forwarding — claude-max-api uses its own token
   delete req.headers['authorization'];
+  delete req.headers['api-key'];
+  next();
+}
+
+// ── CORS for browser-based OpenAI-compatible clients ─────────────────────────
+// Tools like OpenWebUI / Flowise call from the browser: the preflight OPTIONS
+// carries no Authorization header, so it must short-circuit BEFORE auth.
+function cors(req, res, next) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, api-key');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  if (req.method === 'OPTIONS') return res.status(204).end();
   next();
 }
 
@@ -160,8 +181,8 @@ app.get('/', (req, res) => {
 });
 
 // ── Proxy all other requests to the internal claude-max-api ───────────────────
-// Auth on all /v1/* routes
-app.use('/v1', requireAuth);
+// CORS first (preflight must not hit auth), then auth on all /v1/* routes
+app.use('/v1', cors, requireAuth);
 
 // Parameters claude-max-api-proxy actually supports.
 // Everything else is silently stripped to avoid errors.
@@ -216,7 +237,9 @@ const proxyMiddleware = createProxyMiddleware({
         console.error('[claude-proxy] Upstream response error:', err.message);
         if (!res.headersSent) {
           res.writeHead(502, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'upstream_error', message: err.message }));
+          res.end(JSON.stringify(openaiError(
+            `Upstream response error: ${err.message}`, 'api_error', 'upstream_error',
+          )));
         } else {
           res.end();
         }
@@ -270,12 +293,13 @@ const proxyMiddleware = createProxyMiddleware({
       stats.errors++;
       if (res && !res.headersSent) {
         res.writeHead(502, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({
-          error: 'proxy_unavailable',
-          message: stats.ready
+        res.end(JSON.stringify(openaiError(
+          stats.ready
             ? 'Upstream error — check container logs'
             : 'Proxy is still starting, retry in a few seconds',
-        }));
+          'api_error',
+          'proxy_unavailable',
+        )));
       }
     },
   },
