@@ -9,6 +9,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const { spawn, execFile } = require('child_process');
 const { buildRegistry, normalizeModel: resolveModel, stripParams, openaiError } = require('./lib/model');
 const { SUPPORTED_PARAMS } = require('./lib/capabilities');
+const { GEMINI_BASE, isGeminiModel, mergedModels, resolveGeminiMode, filterGeminiModels } = require('./lib/gemini');
 const { renderDashboard } = require('./lib/dashboard');
 
 // ── Dynamic model registry ────────────────────────────────────────────────────
@@ -19,13 +20,54 @@ const { renderDashboard } = require('./lib/dashboard');
 //   "claude-sonnet-4-6" → "claude-sonnet-4"  (strip minor, then alias lookup)
 // When a new model family is added upstream, it appears here automatically.
 
-let modelRegistry = {}; // populated after internal proxy starts
+let modelRegistry = {};   // populated after internal proxy starts
+let claudeModelData = []; // raw /v1/models data from claude-max-api
+let geminiModelData = []; // raw model list from Google's OpenAI endpoint
+
+// ── Gemini backend (optional, two modes) ─────────────────────────────────────
+// GEMINI_BACKEND=api → Google's official OpenAI endpoint (GEMINI_API_KEY).
+// GEMINI_BACKEND=cli → CLIProxyAPI child wrapping an Antigravity OAuth login.
+// Requests for gemini-* models route there; everything else → Claude path.
+// Selection is purely by model name — how OpenAI connectors already choose.
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_MODE = resolveGeminiMode(process.env);
+const GEMINI_INTERNAL_PORT = 13457; // must match gemini-config.yaml
+const GEMINI_ENABLED = GEMINI_MODE !== 'off';
+
+// Where gemini-* requests go, per mode.
+const geminiTarget = GEMINI_MODE === 'cli'
+  ? `http://127.0.0.1:${GEMINI_INTERNAL_PORT}/v1`
+  : GEMINI_BASE;
+// Auth header only for the official API; the CLI child is loopback + keyless.
+const geminiHeaders = GEMINI_MODE === 'api'
+  ? { authorization: `Bearer ${GEMINI_API_KEY}` }
+  : {};
+
+async function refreshGeminiModels() {
+  if (!GEMINI_ENABLED) return;
+  try {
+    const res = await fetch(`${geminiTarget}/models`, {
+      headers: geminiHeaders,
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { data = [] } = await res.json();
+    const filtered = GEMINI_MODE === 'cli' ? filterGeminiModels(data) : data;
+    if (filtered.length && filtered.length !== geminiModelData.length) {
+      console.log(`[claude-proxy] Gemini models refreshed: ${filtered.length} available`);
+    }
+    geminiModelData = filtered;
+  } catch (err) {
+    console.warn('[claude-proxy] Could not fetch Gemini models:', err.message);
+  }
+}
 
 // Returns true when the registry was populated with at least one model.
 async function buildModelRegistry() {
   try {
     const res = await fetch(`http://127.0.0.1:${INTERNAL_PORT}/v1/models`);
     const { data = [] } = await res.json();
+    claudeModelData = data;
     const registry = buildRegistry(data);
     const changed = JSON.stringify(registry) !== JSON.stringify(modelRegistry);
     modelRegistry = registry;
@@ -140,6 +182,32 @@ function startRegistryRefresh() {
     const ok = await buildModelRegistry();
     if (ok) stats.registryReady = true;
   }, REGISTRY_REFRESH_MS).unref();
+}
+
+// ── CLIProxyAPI child (GEMINI_BACKEND=cli) ───────────────────────────────────
+// Wraps an Antigravity OAuth login; log in via the /terminal console.
+// Non-fatal if the binary is missing or it dies — Claude keeps working.
+let geminiProc = null;
+if (GEMINI_MODE === 'cli') {
+  geminiProc = spawn('cli-proxy-api', ['--config', path.join(__dirname, 'gemini-config.yaml')], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  geminiProc.on('error', (err) => {
+    console.warn('[claude-proxy] cli-proxy-api not available, Gemini CLI mode disabled:', err.message);
+    geminiProc = null;
+  });
+  geminiProc.on('exit', (code, signal) => {
+    console.warn(`[claude-proxy] cli-proxy-api exited (code=${code} signal=${signal})`);
+    geminiProc = null;
+  });
+}
+
+// Gemini polling is independent of the Claude child — works even in setup mode.
+if (GEMINI_ENABLED) {
+  // In cli mode give the child a moment to bind before the first poll.
+  setTimeout(refreshGeminiModels, GEMINI_MODE === 'cli' ? PROXY_STARTUP_DELAY_MS : 0);
+  setInterval(refreshGeminiModels, REGISTRY_REFRESH_MS).unref();
+  console.log(`[claude-proxy] Gemini backend enabled (mode: ${GEMINI_MODE})`);
 }
 
 // ── Web terminal (ttyd) for interactive Claude login ─────────────────────────
@@ -259,6 +327,9 @@ app.get('/health', (_req, res) => {
       cli_version: cliVersion || null,
       registry_ready: stats.registryReady,
       models: Object.keys(modelRegistry).length,
+      gemini_enabled: GEMINI_ENABLED,
+      gemini_mode: GEMINI_MODE,
+      gemini_models: geminiModelData.length,
       port: PORT,
     });
 });
@@ -298,6 +369,9 @@ app.get('/', (req, res) => {
     baseUrl: `${req.protocol}://${req.get('host')}`,
     cliVersion,
     setupMode: SETUP_MODE,
+    geminiEnabled: GEMINI_ENABLED,
+    geminiMode: GEMINI_MODE,
+    geminiModels: geminiModelData,
   }));
 });
 
@@ -305,14 +379,72 @@ app.get('/', (req, res) => {
 // CORS first (preflight must not hit auth), then auth on all /v1/* routes
 app.use('/v1', cors, requireAuth);
 
+// Merged model list across both backends. Served by us (not passed through)
+// so connectors see Claude and Gemini models in one dropdown.
+app.get('/v1/models', (_req, res) => {
+  res.json(mergedModels(claudeModelData, geminiModelData));
+});
+
+// ── Gemini chat completions (official Google OpenAI-compatible endpoint) ──────
+// Google speaks OpenAI natively: body passes through untouched (it supports
+// tools, response_format, top_p, … unlike the Claude CLI path) and both SSE
+// and JSON responses pipe straight back.
+const { Readable } = require('stream');
+
+async function handleGemini(req, res) {
+  stats.requests++;
+  try {
+    const upstream = await fetch(`${geminiTarget}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...geminiHeaders },
+      body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(600000),
+    });
+    res.status(upstream.status);
+    const ct = upstream.headers.get('content-type');
+    if (ct) res.setHeader('content-type', ct);
+    if (!upstream.body) return res.end();
+    const stream = Readable.fromWeb(upstream.body);
+    stream.on('error', (err) => {
+      stats.errors++;
+      console.error('[claude-proxy] Gemini stream error:', err.message);
+      res.end();
+    });
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
+  } catch (err) {
+    stats.errors++;
+    console.error('[claude-proxy] Gemini request failed:', err.message);
+    if (!res.headersSent) {
+      res.status(502).json(openaiError(
+        `Gemini upstream error: ${err.message}`, 'api_error', 'gemini_upstream_error',
+      ));
+    } else {
+      res.end();
+    }
+  }
+}
+
 // SUPPORTED_PARAMS comes from lib/capabilities.js — the same table renders
 // the dashboard, so behavior and documentation stay in sync.
 
-// Intercept /v1/chat/completions — normalize model + strip unsupported params.
+// Intercept /v1/chat/completions — route by model name, then (Claude path)
+// normalize model + strip unsupported params.
 // Cap the body so a giant POST can't exhaust memory.
-app.use('/v1/chat/completions', express.json({ limit: '10mb' }), (req, _res, next) => {
+app.use('/v1/chat/completions', express.json({ limit: '10mb' }), (req, res, next) => {
   if (req.body && typeof req.body === 'object') {
-    // Strip unsupported params (keep only what claude-max-api understands)
+    // Backend selection: gemini-* models go to Google's official endpoint.
+    if (isGeminiModel(req.body.model)) {
+      if (!GEMINI_ENABLED) {
+        return res.status(400).json(openaiError(
+          'Gemini models are not enabled on this proxy — set GEMINI_API_KEY.',
+          'invalid_request_error', 'model_not_available',
+        ));
+      }
+      req.body.model = req.body.model.replace(/^models\//, '');
+      return handleGemini(req, res);
+    }
+    // Claude path: strip params claude-max-api doesn't understand
     const { stripped, dropped } = stripParams(req.body, SUPPORTED_PARAMS);
     if (dropped.length) {
       console.warn(`[claude-proxy] Stripped unsupported params: ${dropped.join(', ')}`);
@@ -459,6 +591,7 @@ function shutdown(sig) {
   server.close(done);
   try { if (proxyProc) proxyProc.kill('SIGTERM'); } catch { /* already gone */ }
   try { if (ttydProc) ttydProc.kill('SIGTERM'); } catch { /* already gone */ }
+  try { if (geminiProc) geminiProc.kill('SIGTERM'); } catch { /* already gone */ }
   setTimeout(() => process.exit(0), 10000).unref();
 }
 ['SIGTERM', 'SIGINT'].forEach(sig => process.on(sig, () => shutdown(sig)));

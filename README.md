@@ -87,6 +87,8 @@ services:
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth token for Claude Code CLI. Optional if you log in via `/terminal` instead (see below). With neither, the proxy starts in **setup mode**. |
 | `API_KEY` | — | Optional. Set to protect `/v1/*` with `Authorization: Bearer <key>`. Empty = open access. Generate: `openssl rand -hex 32`. |
+| `GEMINI_BACKEND` | auto | `cli` (Antigravity OAuth via CLIProxyAPI), `api` (official endpoint), or `off`. Default: `api` if `GEMINI_API_KEY` set, else `cli`. |
+| `GEMINI_API_KEY` | — | Key for `api` mode, from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free tier available). |
 | `HOST_PORT` | `3456` | Port exposed on the host (docker-compose only) |
 | `PORT` | `3456` | Port the container listens on |
 | `INTERNAL_PORT` | `13456` | Internal port for the raw proxy (do not expose) |
@@ -167,6 +169,31 @@ LibreChat, LangChain, …) works with just two fields — no custom connector:
 |---|---|
 | Base URL | `http://<host>:3456/v1` |
 | API key | your `API_KEY` (any string if unset) |
+
+### Gemini backend (model-name routing)
+
+The same base URL also serves **Gemini** models. Selection is by model name —
+exactly how OpenAI-compatible tools already pick a model:
+
+- `gemini-*` → the Gemini backend (mode below)
+- `claude-*`, `sonnet`, `opus`, … → the Claude Code CLI path
+
+`GET /v1/models` lists both families in one dropdown. Gemini requests pass
+through unmodified — `tools`, `response_format`, `top_p` etc. work there
+even though the Claude path strips them.
+
+**Two modes**, selected with `GEMINI_BACKEND`:
+
+| Mode | How it works | Setup |
+|---|---|---|
+| `cli` (default without key) | **Antigravity OAuth** subscription via a bundled [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) child process | Open `/terminal`, choose *Log in Gemini*, follow the OAuth flow, then *restart proxy*. Credentials persist in the `gemini-data` volume. |
+| `api` (default with key) | Google's **official** OpenAI-compatible endpoint | Set `GEMINI_API_KEY` ([aistudio.google.com/apikey](https://aistudio.google.com/apikey), free tier) |
+| `off` | Gemini disabled — `gemini-*` requests get a 400 | — |
+
+> **Warning (`cli` mode):** Google has suspended Google accounts — including
+> paying subscribers — for routing Gemini CLI / Antigravity OAuth tokens
+> through third-party proxies (enforcement since Feb 2026). `cli` mode is
+> use-at-your-own-risk; `api` mode is the ToS-clean alternative.
 
 Compatibility provided by the proxy:
 - `GET /v1/models` for model discovery / key validation

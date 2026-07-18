@@ -1,0 +1,19 @@
+# CLIProxyAPI config for the Gemini/Antigravity backend (GEMINI_BACKEND=cli).
+# Loopback-only — reachable solely through the main proxy on /v1.
+host: "127.0.0.1"
+port: 13457
+
+# OAuth credentials from `--antigravity-login` land here (volume-persisted).
+auth-dir: "/home/node/.cli-proxy-api"
+
+# No client keys: the listener is loopback-only and the outer proxy enforces
+# its own API_KEY before anything reaches this process.
+api-keys: []
+
+# Management API/panel off.
+remote-management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+
+debug: false

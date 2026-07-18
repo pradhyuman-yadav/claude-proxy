@@ -204,6 +204,7 @@
       <dl class="defs">
         <div class="def"><dt>Subscription token</dt><dd><span class="em" style="color:{{tokenColor}}">{{tokenLabel}}</span></dd></div>
         <div class="def"><dt>Client API key</dt><dd><span class="em" style="color:{{authColor}}">{{authLabel}}</span></dd></div>
+        <div class="def"><dt>Gemini backend</dt><dd><span class="em" style="color:{{geminiColor}}">{{geminiLabel}}</span></dd></div>
       </dl>
     </div>
   </section>
@@ -216,9 +217,13 @@
     </div>
     <div class="section-body">
       <table>
-        <thead><tr><th>Model ID</th><th>Accepted aliases</th></tr></thead>
+        <thead><tr><th>Model ID</th><th>Backend</th><th>Accepted aliases</th></tr></thead>
         <tbody>{{modelRows}}</tbody>
       </table>
+      <p class="note" style="margin-top:12px;margin-bottom:0">
+        Backend selection is by model name: <code>gemini-*</code> routes to Google's
+        official OpenAI-compatible endpoint; everything else to the Claude path.
+      </p>
     </div>
   </section>
 
@@ -230,8 +235,11 @@
     </div>
     <div class="section-body">
       <p class="note">
-        Runs on the <strong>Claude Code CLI</strong>, not the direct Anthropic API.
-        Unsupported parameters are stripped before forwarding.
+        Applies to <code>claude-*</code> models only — they run on the
+        <strong>Claude Code CLI</strong>, not the direct Anthropic API, and
+        unsupported parameters are stripped before forwarding.
+        <code>gemini-*</code> requests pass through to Google unmodified
+        (tools, <code>response_format</code>, <code>top_p</code> etc. work there).
       </p>
       <table>
         <thead><tr><th>Parameter</th><th>Support</th><th>Notes</th></tr></thead>
