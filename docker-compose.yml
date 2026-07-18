@@ -6,15 +6,22 @@ services:
     ports:
       - "${HOST_PORT:-3456}:${PORT:-3456}"
     environment:
-      # Required: OAuth token from ~/.claude/credentials.json (or Windows equivalent)
-      # Run `claude auth login` first, then extract the token.
-      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:?Set CLAUDE_CODE_OAUTH_TOKEN in .env}
+      # Option A: paste your OAuth token from `claude auth login` on any machine.
+      # Option B: leave empty and log in from the browser at /terminal instead —
+      #           credentials persist in the claude-data volume below.
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - API_KEY=${API_KEY:-}
       - PORT=${PORT:-3456}
       - INTERNAL_PORT=13456
+    volumes:
+      # Persists Claude credentials across container restarts/redeploys
+      - claude-data:/home/node/.claude
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT:-3456}/health || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 25s
       retries: 3
+
+volumes:
+  claude-data:

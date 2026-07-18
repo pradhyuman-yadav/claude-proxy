@@ -85,11 +85,41 @@ services:
 
 | Variable | Default | Description |
 |---|---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | — | **Required.** OAuth token for Claude Code CLI. The container refuses to start without it. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | OAuth token for Claude Code CLI. Optional if you log in via `/terminal` instead (see below). With neither, the proxy starts in **setup mode**. |
 | `API_KEY` | — | Optional. Set to protect `/v1/*` with `Authorization: Bearer <key>`. Empty = open access. Generate: `openssl rand -hex 32`. |
 | `HOST_PORT` | `3456` | Port exposed on the host (docker-compose only) |
 | `PORT` | `3456` | Port the container listens on |
 | `INTERNAL_PORT` | `13456` | Internal port for the raw proxy (do not expose) |
+| `TTYD_PORT` | `7681` | Internal port for the web terminal (do not expose) |
+
+## Logging in from the browser (no token pasting)
+
+Instead of extracting `CLAUDE_CODE_OAUTH_TOKEN` by hand, you can authenticate
+entirely from the browser:
+
+1. Deploy with `CLAUDE_CODE_OAUTH_TOKEN` empty — the proxy starts in
+   **setup mode** and the dashboard shows a setup notice.
+2. Open `http://<host>:3456/terminal/?key=<API_KEY>` (the `?key=` is only
+   needed once; a session cookie is set). This is an in-browser terminal
+   running the Claude login flow.
+3. Follow the login prompts (visit the URL it prints, paste the code).
+4. Click **restart proxy** in the dashboard footer. The proxy comes back
+   using the stored credentials — no token env var needed.
+
+Credentials persist in the `claude-data` Docker volume, so they survive
+container restarts and image updates. The terminal is protected by `API_KEY`
+and the underlying ttyd listens on loopback only.
+
+## What is discovered dynamically
+
+- **Models + aliases** — queried live from `/v1/models` at startup (with
+  retries), so new Claude models appear automatically after an image update.
+- **Claude Code CLI version** — detected at startup, shown on the dashboard
+  and in `/health` (`cli_version`).
+- **Supported parameters** — upstream exposes no capabilities endpoint, so
+  these can't be probed; they live in one table (`lib/capabilities.js`) that
+  drives both the request stripping *and* the dashboard docs, so the two can
+  never disagree.
 
 ## Architecture
 
@@ -121,6 +151,24 @@ Point any OpenAI-compatible client at `http://<host>:3456`.
 The client `api_key` is **only** the proxy's `API_KEY` gate. Your Claude
 subscription is authenticated separately via `CLAUDE_CODE_OAUTH_TOKEN` on the
 server — clients never see it.
+
+### Generic "OpenAI Compatible" connectors
+
+Any tool with an OpenAI-compatible provider option (n8n, OpenWebUI, Flowise,
+LibreChat, LangChain, …) works with just two fields — no custom connector:
+
+| Field | Value |
+|---|---|
+| Base URL | `http://<host>:3456/v1` |
+| API key | your `API_KEY` (any string if unset) |
+
+Compatibility provided by the proxy:
+- `GET /v1/models` for model discovery / key validation
+- OpenAI error envelope (`{"error": {"message", "type", "code"}}`) on 401/502
+- `max_completion_tokens` accepted as an alias for `max_tokens`
+- `api-key` header accepted as an alternative to `Authorization: Bearer`
+- CORS + `OPTIONS` preflight for browser-based clients
+- Unsupported params stripped server-side, so strict clients don't error
 
 ```python
 from openai import OpenAI

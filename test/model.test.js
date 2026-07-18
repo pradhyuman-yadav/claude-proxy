@@ -2,10 +2,13 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildRegistry, normalizeModel, stripParams } = require('../lib/model');
+const { buildRegistry, normalizeModel, stripParams, openaiError } = require('../lib/model');
+const { SUPPORTED_PARAMS: SUPPORTED } = require('../lib/capabilities');
 
-// Mirrors SUPPORTED_PARAMS in server.js
-const SUPPORTED = new Set(['model', 'messages', 'max_tokens', 'temperature', 'stream', 'stop']);
+test('capabilities exposes the expected supported set', () => {
+  assert.deepEqual([...SUPPORTED].sort(),
+    ['max_tokens', 'messages', 'model', 'stop', 'stream', 'temperature']);
+});
 
 const MODELS = [
   { id: 'claude-sonnet-4' },
@@ -76,4 +79,29 @@ test('stripParams keeps only supported keys', () => {
 test('stripParams tolerates null/empty body', () => {
   assert.deepEqual(stripParams(null, SUPPORTED), { stripped: {}, dropped: [] });
   assert.deepEqual(stripParams({}, SUPPORTED), { stripped: {}, dropped: [] });
+});
+
+test('stripParams maps max_completion_tokens → max_tokens', () => {
+  const { stripped, dropped } = stripParams({ max_completion_tokens: 512 }, SUPPORTED);
+  assert.equal(stripped.max_tokens, 512);
+  assert.equal(stripped.max_completion_tokens, undefined);
+  assert.deepEqual(dropped, []);
+});
+
+test('explicit max_tokens wins over the alias, either order', () => {
+  const a = stripParams({ max_tokens: 100, max_completion_tokens: 512 }, SUPPORTED);
+  assert.equal(a.stripped.max_tokens, 100);
+  const b = stripParams({ max_completion_tokens: 512, max_tokens: 100 }, SUPPORTED);
+  assert.equal(b.stripped.max_tokens, 100);
+});
+
+test('openaiError produces the OpenAI error envelope', () => {
+  assert.deepEqual(openaiError('bad key', 'invalid_request_error', 'invalid_api_key'), {
+    error: {
+      message: 'bad key',
+      type: 'invalid_request_error',
+      param: null,
+      code: 'invalid_api_key',
+    },
+  });
 });

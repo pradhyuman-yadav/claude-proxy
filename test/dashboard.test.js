@@ -52,6 +52,31 @@ test('renderDashboard reflects starting / absent-token state', () => {
   assert.match(html, /ABSENT/);
 });
 
+test('renderDashboard renders param rows from capabilities', () => {
+  const html = render();
+  assert.match(html, /<code>max_tokens<\/code>/);
+  assert.match(html, /max_completion_tokens accepted as alias/);
+  assert.match(html, /Function calling unsupported/);
+  assert.doesNotMatch(html, /\{\{paramRows\}\}/);
+});
+
+test('setup mode shows the notice and SETUP REQUIRED status', () => {
+  const html = render({ setupMode: true, hasToken: false });
+  assert.match(html, /SETUP REQUIRED/);
+  assert.match(html, /Setup required/);
+  assert.match(html, /\/terminal/);
+});
+
+test('normal mode has no setup notice', () => {
+  const html = render();
+  assert.doesNotMatch(html, /Setup required/);
+});
+
+test('renderDashboard shows CLI version when provided', () => {
+  assert.match(render({ cliVersion: '2.1.0 (Claude Code)' }), /2\.1\.0 \(Claude Code\)/);
+  assert.match(render(), /Claude Code unknown/);
+});
+
 test('renderDashboard contains no emoji', () => {
   const html = render({ authRequired: true, hasToken: false });
   // No characters outside the Basic Multilingual Plane (emoji live in astral planes)
