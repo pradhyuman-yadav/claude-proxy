@@ -66,6 +66,18 @@
     .status .sq { width: 9px; height: 9px; background: {{statusColor}}; display: inline-block; }
     .status .sub { display: block; margin-top: 6px; color: var(--muted); }
 
+    /* ── Setup notice ─────────────────────────────────────── */
+    .notice {
+      border: 1px solid var(--accent); border-left-width: 4px;
+      background: #f6ece7; padding: 16px 18px; margin-top: 22px;
+      font-size: 12px; line-height: 1.7;
+    }
+    .notice .t {
+      font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+      color: var(--accent); font-weight: 600; margin-bottom: 6px;
+    }
+    .notice a { color: var(--accent); }
+
     /* ── Section scaffolding ──────────────────────────────── */
     .section { padding: 26px 0; border-bottom: 1px solid var(--hair); }
     .section-head {
@@ -170,8 +182,11 @@
     <div class="status">
       <span class="now"><span class="sq"></span>{{statusLabel}}</span>
       <span class="sub">Uptime {{uptime}} · Port {{port}}</span>
+      <span class="sub">Claude Code {{cliVersion}}</span>
     </div>
   </header>
+
+  {{setupNotice}}
 
   <!-- 01 · Runtime -->
   <section class="section">
@@ -220,21 +235,7 @@
       </p>
       <table>
         <thead><tr><th>Parameter</th><th>Support</th><th>Notes</th></tr></thead>
-        <tbody>
-          <tr><td><code>model</code></td><td><span class="yes">yes</span></td><td>Normalized to canonical ID</td></tr>
-          <tr><td><code>messages</code></td><td><span class="yes">yes</span></td><td>system / user / assistant roles</td></tr>
-          <tr><td><code>max_tokens</code></td><td><span class="yes">yes</span></td><td><code>max_completion_tokens</code> accepted as alias</td></tr>
-          <tr><td><code>temperature</code></td><td><span class="yes">yes</span></td><td>0 – 1</td></tr>
-          <tr><td><code>stream</code></td><td><span class="yes">yes</span></td><td>SSE streaming</td></tr>
-          <tr><td><code>stop</code></td><td><span class="yes">yes</span></td><td>Stop sequences</td></tr>
-          <tr><td><code>tools</code> / <code>tool_choice</code></td><td><span class="no">no</span></td><td>Function calling unsupported</td></tr>
-          <tr><td><code>top_p</code> / <code>top_k</code></td><td><span class="no">no</span></td><td>Stripped</td></tr>
-          <tr><td><code>n</code></td><td><span class="no">no</span></td><td>One completion per request</td></tr>
-          <tr><td><code>presence_penalty</code> / <code>frequency_penalty</code></td><td><span class="no">no</span></td><td>Stripped</td></tr>
-          <tr><td><code>logprobs</code> / <code>logit_bias</code></td><td><span class="no">no</span></td><td>Stripped</td></tr>
-          <tr><td><code>response_format</code></td><td><span class="no">no</span></td><td>Use prompt instructions</td></tr>
-          <tr><td>Vision / image inputs</td><td><span class="no">no</span></td><td>Text only</td></tr>
-        </tbody>
+        <tbody>{{paramRows}}</tbody>
       </table>
     </div>
   </section>
@@ -289,9 +290,28 @@ Body (JSON):
 
   <footer class="foot">
     <span>Auto-refresh · 30s</span>
-    <span><a href="/health">/health</a> &nbsp; <a href="/v1/models">/v1/models</a></span>
+    <span>
+      <a href="/health">/health</a> &nbsp;
+      <a href="/v1/models">/v1/models</a> &nbsp;
+      <a href="/terminal/">/terminal</a> &nbsp;
+      <a href="#" onclick="restartProxy();return false">restart proxy</a>
+    </span>
   </footer>
 
 </div>
+<script>
+async function restartProxy() {
+  if (!confirm('Restart the proxy? It will be back in a few seconds.')) return;
+  // Try with the session cookie first; on 401 ask for the API key.
+  let r = await fetch('/admin/restart', { method: 'POST' });
+  if (r.status === 401) {
+    const key = prompt('API key:');
+    if (!key) return;
+    r = await fetch('/admin/restart', { method: 'POST', headers: { 'api-key': key } });
+  }
+  if (r.ok) setTimeout(() => location.reload(), 5000);
+  else alert('Restart failed: HTTP ' + r.status);
+}
+</script>
 </body>
 </html>

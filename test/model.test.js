@@ -3,9 +3,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { buildRegistry, normalizeModel, stripParams, openaiError } = require('../lib/model');
+const { SUPPORTED_PARAMS: SUPPORTED } = require('../lib/capabilities');
 
-// Mirrors SUPPORTED_PARAMS in server.js
-const SUPPORTED = new Set(['model', 'messages', 'max_tokens', 'temperature', 'stream', 'stop']);
+test('capabilities exposes the expected supported set', () => {
+  assert.deepEqual([...SUPPORTED].sort(),
+    ['max_tokens', 'messages', 'model', 'stop', 'stream', 'temperature']);
+});
 
 const MODELS = [
   { id: 'claude-sonnet-4' },

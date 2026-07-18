@@ -1,10 +1,14 @@
 'use strict';
 
 const http = require('http');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { buildRegistry, normalizeModel: resolveModel, stripParams, openaiError } = require('./lib/model');
+const { SUPPORTED_PARAMS } = require('./lib/capabilities');
 const { renderDashboard } = require('./lib/dashboard');
 
 // ── Dynamic model registry ────────────────────────────────────────────────────
@@ -44,12 +48,27 @@ function normalizeModel(name = '') {
 const PORT = parseInt(process.env.PORT ?? '3456', 10);
 const INTERNAL_PORT = parseInt(process.env.INTERNAL_PORT ?? '13456', 10);
 
-// Fail fast: without an OAuth token the internal proxy authenticates against
-// nothing and every completion silently 4xxs. Better to crash loudly at boot.
-if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-  console.error('[claude-proxy] CLAUDE_CODE_OAUTH_TOKEN is not set. Refusing to start.');
-  process.exit(1);
+// ── Authentication sources ────────────────────────────────────────────────────
+// The internal proxy can authenticate via CLAUDE_CODE_OAUTH_TOKEN *or* stored
+// Claude Code credentials (created by logging in at /terminal, persisted in a
+// volume). With neither, start in SETUP MODE: dashboard + web terminal only,
+// so the user can log in from the browser instead of pasting a token.
+const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+const hasStoredCreds = ['.credentials.json', 'credentials.json']
+  .some(f => fs.existsSync(path.join(CLAUDE_DIR, f)));
+const hasToken = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
+const SETUP_MODE = !hasToken && !hasStoredCreds;
+if (SETUP_MODE) {
+  console.warn('[claude-proxy] No CLAUDE_CODE_OAUTH_TOKEN and no stored credentials.');
+  console.warn('[claude-proxy] Starting in SETUP MODE — log in via the /terminal page.');
 }
+
+// Detect the installed Claude Code CLI version (shown on dashboard + /health).
+let cliVersion = '';
+execFile('claude', ['--version'], { timeout: 10000 }, (err, stdout) => {
+  if (!err) cliVersion = String(stdout).trim();
+  else console.warn('[claude-proxy] Could not detect claude CLI version:', err.message);
+});
 
 // How long to wait for the internal proxy to bind + authenticate before the
 // first registry attempt, and how aggressively to retry if it is not ready.
@@ -66,17 +85,31 @@ const stats = {
 };
 
 // ── Spawn the underlying claude-max-api proxy on an internal port ────────────
-const proxyProc = spawn('claude-max-api', [String(INTERNAL_PORT)], {
-  stdio: ['ignore', 'inherit', 'inherit'],
-  env: { ...process.env, PORT: String(INTERNAL_PORT) },
-});
+// Skipped in setup mode — it has nothing to authenticate with yet.
+let proxyProc = null;
+if (!SETUP_MODE) {
+  proxyProc = spawn('claude-max-api', [String(INTERNAL_PORT)], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+    env: { ...process.env, PORT: String(INTERNAL_PORT) },
+  });
 
-proxyProc.on('spawn', () => {
-  // Give it a few seconds to bind and authenticate, then poll /v1/models until
-  // it answers. Mark ready as soon as the internal proxy responds so /health
-  // flips green; keep retrying the registry in the background if it is empty.
-  setTimeout(() => waitForRegistry(0), PROXY_STARTUP_DELAY_MS);
-});
+  proxyProc.on('spawn', () => {
+    // Give it a few seconds to bind and authenticate, then poll /v1/models until
+    // it answers. Mark ready as soon as the internal proxy responds so /health
+    // flips green; keep retrying the registry in the background if it is empty.
+    setTimeout(() => waitForRegistry(0), PROXY_STARTUP_DELAY_MS);
+  });
+
+  proxyProc.on('error', (err) => {
+    console.error('[claude-proxy] Failed to start proxy process:', err.message);
+    process.exit(1);
+  });
+
+  proxyProc.on('exit', (code, signal) => {
+    console.error(`[claude-proxy] Proxy exited (code=${code} signal=${signal})`);
+    process.exit(code ?? 1);
+  });
+}
 
 async function waitForRegistry(attempt) {
   const ok = await buildModelRegistry();
@@ -94,14 +127,28 @@ async function waitForRegistry(attempt) {
   }
 }
 
-proxyProc.on('error', (err) => {
-  console.error('[claude-proxy] Failed to start proxy process:', err.message);
-  process.exit(1);
-});
+// ── Web terminal (ttyd) for interactive Claude login ─────────────────────────
+// Serves an in-browser terminal running bin/login.sh, proxied at /terminal
+// behind API_KEY auth. Binds to loopback only — never exposed directly.
+const TTYD_PORT = parseInt(process.env.TTYD_PORT ?? '7681', 10);
+let ttydProc = spawn('ttyd', [
+  '-p', String(TTYD_PORT),
+  '-i', '127.0.0.1',       // loopback only — reachable solely through our proxy
+  '-b', '/terminal',       // base path matches the proxied route
+  '-W',                    // writable (input enabled)
+  'sh', path.join(__dirname, 'bin', 'login.sh'),
+], { stdio: ['ignore', 'inherit', 'inherit'] });
 
-proxyProc.on('exit', (code, signal) => {
-  console.error(`[claude-proxy] Proxy exited (code=${code} signal=${signal})`);
-  process.exit(code ?? 1);
+ttydProc.on('error', (err) => {
+  // Non-fatal: token-based setups work fine without the web terminal.
+  console.warn('[claude-proxy] ttyd not available, /terminal disabled:', err.message);
+  ttydProc = null;
+});
+ttydProc.on('exit', (code) => {
+  if (code !== null && code !== 0) {
+    console.warn(`[claude-proxy] ttyd exited (code=${code}); /terminal disabled`);
+  }
+  ttydProc = null;
 });
 
 // ── Express app ───────────────────────────────────────────────────────────────
@@ -146,6 +193,38 @@ function cors(req, res, next) {
   next();
 }
 
+// ── Browser auth (terminal + admin) ──────────────────────────────────────────
+// Browsers can't attach an Authorization header to a page load or WebSocket
+// upgrade, so /terminal accepts ?key=<API_KEY> once and sets an HttpOnly
+// cookie; the cookie then authorizes the page, the WS upgrade, and /admin/*.
+function keyFromCookie(req) {
+  const m = /(?:^|;\s*)proxy_auth=([^;]*)/.exec(req.headers.cookie || '');
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+function browserKey(req) {
+  const auth = req.headers['authorization'] || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+  let queryKey = '';
+  try { queryKey = new URL(req.url, 'http://x').searchParams.get('key') || ''; } catch { /* ignore */ }
+  return bearer || req.headers['api-key'] || queryKey || keyFromCookie(req);
+}
+
+function requireBrowserAuth(req, res, next) {
+  if (!API_KEY) return next();
+  if (browserKey(req) !== API_KEY) {
+    return res.status(401).send(
+      '<!DOCTYPE html><meta charset="utf-8"><body style="font-family:monospace;padding:40px">'
+      + '<h3>401 — key required</h3>'
+      + `<p>Open <code>${req.path}?key=&lt;API_KEY&gt;</code> once; a session cookie is set after that.</p>`,
+    );
+  }
+  // Persist for the WS upgrade and subsequent navigations
+  res.setHeader('Set-Cookie',
+    `proxy_auth=${encodeURIComponent(API_KEY)}; HttpOnly; SameSite=Strict; Path=/`);
+  next();
+}
+
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
 // JSON health endpoint — used by Docker HEALTHCHECK and monitoring tools.
@@ -159,12 +238,37 @@ app.get('/health', (_req, res) => {
       uptime_seconds: Math.floor((Date.now() - stats.startTime) / 1000),
       requests: stats.requests,
       errors: stats.errors,
-      auth_configured: !!process.env.CLAUDE_CODE_OAUTH_TOKEN, // upstream OAuth token present
-      api_key_required: !!API_KEY,                            // clients must send Bearer API_KEY
+      auth_configured: hasToken || hasStoredCreds,  // token env OR stored login
+      api_key_required: !!API_KEY,                  // clients must send Bearer API_KEY
+      setup_mode: SETUP_MODE,
+      cli_version: cliVersion || null,
       registry_ready: stats.registryReady,
       models: Object.keys(modelRegistry).length,
       port: PORT,
     });
+});
+
+// ── Web terminal + admin (browser-cookie auth) ────────────────────────────────
+const terminalProxy = createProxyMiddleware({
+  target: `http://127.0.0.1:${TTYD_PORT}`,
+  changeOrigin: false,
+  ws: true,
+});
+
+app.use('/terminal', requireBrowserAuth, (req, res, next) => {
+  if (!ttydProc) {
+    return res.status(503).send('Web terminal unavailable — ttyd is not running in this image.');
+  }
+  return terminalProxy(req, res, next);
+});
+
+// Restart the whole process (Docker's restart policy brings it back up).
+// Used after logging in via /terminal so the internal proxy picks up the
+// fresh credentials.
+app.post('/admin/restart', requireBrowserAuth, (_req, res) => {
+  console.log('[claude-proxy] Restart requested via /admin/restart');
+  res.json({ restarting: true });
+  setTimeout(() => process.exit(0), 300);
 });
 
 // HTML status dashboard — public (no auth needed, it's just a status page).
@@ -174,9 +278,11 @@ app.get('/', (req, res) => {
     stats,
     modelRegistry,
     port: PORT,
-    hasToken: !!process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    hasToken: hasToken || hasStoredCreds,
     authRequired: !!API_KEY,
     baseUrl: `${req.protocol}://${req.get('host')}`,
+    cliVersion,
+    setupMode: SETUP_MODE,
   }));
 });
 
@@ -184,11 +290,8 @@ app.get('/', (req, res) => {
 // CORS first (preflight must not hit auth), then auth on all /v1/* routes
 app.use('/v1', cors, requireAuth);
 
-// Parameters claude-max-api-proxy actually supports.
-// Everything else is silently stripped to avoid errors.
-const SUPPORTED_PARAMS = new Set([
-  'model', 'messages', 'max_tokens', 'temperature', 'stream', 'stop',
-]);
+// SUPPORTED_PARAMS comes from lib/capabilities.js — the same table renders
+// the dashboard, so behavior and documentation stay in sync.
 
 // Intercept /v1/chat/completions — normalize model + strip unsupported params.
 // Cap the body so a giant POST can't exhaust memory.
@@ -309,7 +412,19 @@ app.use(proxyMiddleware);
 
 // ── HTTP server (WebSocket-aware) ─────────────────────────────────────────────
 const server = http.createServer(app);
-server.on('upgrade', proxyMiddleware.upgrade);
+server.on('upgrade', (req, socket, head) => {
+  if ((req.url || '').startsWith('/terminal')) {
+    // ttyd WebSocket — authorize via the cookie set by the /terminal page
+    if (API_KEY && browserKey(req) !== API_KEY) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    if (!ttydProc) { socket.destroy(); return; }
+    return terminalProxy.upgrade(req, socket, head);
+  }
+  return proxyMiddleware.upgrade(req, socket, head);
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[claude-proxy] Listening on :${PORT}`);
@@ -327,7 +442,8 @@ function shutdown(sig) {
   console.log(`[claude-proxy] Received ${sig}, shutting down…`);
   const done = () => process.exit(0);
   server.close(done);
-  try { proxyProc.kill('SIGTERM'); } catch { /* already gone */ }
+  try { if (proxyProc) proxyProc.kill('SIGTERM'); } catch { /* already gone */ }
+  try { if (ttydProc) ttydProc.kill('SIGTERM'); } catch { /* already gone */ }
   setTimeout(() => process.exit(0), 10000).unref();
 }
 ['SIGTERM', 'SIGINT'].forEach(sig => process.on(sig, () => shutdown(sig)));
