@@ -27,13 +27,14 @@ async function buildModelRegistry() {
     const res = await fetch(`http://127.0.0.1:${INTERNAL_PORT}/v1/models`);
     const { data = [] } = await res.json();
     const registry = buildRegistry(data);
+    const changed = JSON.stringify(registry) !== JSON.stringify(modelRegistry);
     modelRegistry = registry;
     const count = Object.keys(registry).length;
     if (count === 0) {
       console.warn('[claude-proxy] Model registry empty — upstream returned no models yet');
       return false;
     }
-    console.log('[claude-proxy] Model registry built:', JSON.stringify(registry));
+    if (changed) console.log('[claude-proxy] Model registry updated:', JSON.stringify(registry));
     return true;
   } catch (err) {
     console.warn('[claude-proxy] Could not build model registry:', err.message);
@@ -75,6 +76,9 @@ execFile('claude', ['--version'], { timeout: 10000 }, (err, stdout) => {
 const PROXY_STARTUP_DELAY_MS = 5000;
 const REGISTRY_RETRY_MS = 3000;
 const REGISTRY_MAX_ATTEMPTS = 10;
+// Re-poll /v1/models periodically so models released while the container is
+// running appear without a restart (cheap loopback call).
+const REGISTRY_REFRESH_MS = 10 * 60 * 1000;
 
 const stats = {
   startTime: Date.now(),
@@ -117,6 +121,7 @@ async function waitForRegistry(attempt) {
   if (ok) {
     stats.registryReady = true;
     console.log(`[claude-proxy] Internal proxy ready on :${INTERNAL_PORT}`);
+    startRegistryRefresh();
     return;
   }
   if (attempt + 1 < REGISTRY_MAX_ATTEMPTS) {
@@ -124,7 +129,17 @@ async function waitForRegistry(attempt) {
   } else {
     console.warn('[claude-proxy] Giving up on model registry after '
       + `${REGISTRY_MAX_ATTEMPTS} attempts — aliases will not resolve`);
+    startRegistryRefresh(); // keep trying in the background regardless
   }
+}
+
+// Keep the registry current for the container's whole lifetime — new models
+// released upstream show up within REGISTRY_REFRESH_MS, no restart needed.
+function startRegistryRefresh() {
+  setInterval(async () => {
+    const ok = await buildModelRegistry();
+    if (ok) stats.registryReady = true;
+  }, REGISTRY_REFRESH_MS).unref();
 }
 
 // ── Web terminal (ttyd) for interactive Claude login ─────────────────────────

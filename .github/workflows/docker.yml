@@ -6,6 +6,12 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
+  # Weekly rebuild (Mon 06:00 UTC) so the baked-in Claude Code CLI and
+  # claude-max-api-proxy pick up new releases — and with them, new models —
+  # without any code change. Portainer redeploys automatically after push.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
 
 env:
   REGISTRY: ghcr.io
@@ -48,6 +54,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
+            type=raw,value=main,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
@@ -62,6 +69,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Scheduled/manual rebuilds must NOT reuse the cached `npm install -g`
+          # layer — the whole point is pulling the latest CLI + proxy.
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
