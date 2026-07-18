@@ -34,6 +34,35 @@ test('buildRegistry tolerates empty / missing input', () => {
   assert.deepEqual(buildRegistry([]), {});
 });
 
+test('family aliases point at the NEWEST version', () => {
+  const r = buildRegistry([
+    { id: 'claude-sonnet-4' },
+    { id: 'claude-sonnet-4-5' },
+    { id: 'claude-sonnet-5' },
+  ]);
+  assert.equal(r['sonnet'], 'claude-sonnet-5');
+  assert.equal(r['claude-sonnet'], 'claude-sonnet-5');
+  // exact ids still resolve to themselves
+  assert.equal(r['claude-sonnet-4'], 'claude-sonnet-4');
+  assert.equal(r['claude-sonnet-4-5'], 'claude-sonnet-4-5');
+});
+
+test('buildRegistry handles multi-part and dated version ids', () => {
+  const r = buildRegistry([
+    { id: 'claude-opus-4-1' },
+    { id: 'claude-opus-4-1-20250805' },
+  ]);
+  assert.equal(r['opus'], 'claude-opus-4-1-20250805'); // dated build is newer
+  assert.equal(r['claude-opus-4-1'], 'claude-opus-4-1');
+});
+
+test('registry ordering does not matter', () => {
+  const a = buildRegistry([{ id: 'claude-haiku-5' }, { id: 'claude-haiku-4-5' }]);
+  const b = buildRegistry([{ id: 'claude-haiku-4-5' }, { id: 'claude-haiku-5' }]);
+  assert.equal(a['haiku'], 'claude-haiku-5');
+  assert.equal(b['haiku'], 'claude-haiku-5');
+});
+
 test('normalizeModel resolves shorthand aliases', () => {
   assert.equal(normalizeModel('sonnet', REGISTRY), 'claude-sonnet-4');
   assert.equal(normalizeModel('claude-opus', REGISTRY), 'claude-opus-4');

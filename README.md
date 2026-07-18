@@ -112,8 +112,14 @@ and the underlying ttyd listens on loopback only.
 
 ## What is discovered dynamically
 
-- **Models + aliases** — queried live from `/v1/models` at startup (with
-  retries), so new Claude models appear automatically after an image update.
+- **Models + aliases** — queried live from `/v1/models` at startup and
+  re-polled every 10 minutes, so models released while the container runs
+  appear without a restart. Family shorthands (`sonnet`, `claude-opus`)
+  always resolve to the **newest** version available. A weekly scheduled CI
+  rebuild (Mon 06:00 UTC, also triggerable manually via *Run workflow*)
+  refreshes the baked-in Claude Code CLI + `claude-max-api-proxy` and
+  redeploys via the Portainer webhook — so new models that require a newer
+  CLI arrive with zero code changes.
 - **Claude Code CLI version** — detected at startup, shown on the dashboard
   and in `/health` (`cli_version`).
 - **Supported parameters** — upstream exposes no capabilities endpoint, so
